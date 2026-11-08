@@ -88,18 +88,53 @@ def validate_url_ssrf(url: str) -> Tuple[bool, Optional[str]]:
             return False, f"Недопустимый сетевой адрес: {ip_str}"
 
         # Запрет всех приватных и внутренних диапазонов по RFC 1918, RFC 3927 и др.
-        if (
+        is_bad_ip = (
             ip.is_private
             or ip.is_loopback
             or ip.is_link_local
             or ip.is_reserved
             or ip.is_multicast
             or ip.is_unspecified
-        ):
+        )
+
+        # Проверка IPv4-mapped IPv6 (например ::ffff:127.0.0.1)
+        if not is_bad_ip and hasattr(ip, "ipv4_mapped") and ip.ipv4_mapped:
+            mapped = ip.ipv4_mapped
+            if (
+                mapped.is_private
+                or mapped.is_loopback
+                or mapped.is_link_local
+                or mapped.is_reserved
+                or mapped.is_multicast
+                or mapped.is_unspecified
+            ):
+                is_bad_ip = True
+
+        if is_bad_ip:
             logger.warning(f"[SSRF Guard] Блокировка попытки добавления приватного адреса: {url} -> {ip_str}")
             return False, f"Добавление локальных и служебных адресов ({ip_str}) строго запрещено политикой безопасности."
 
     return True, None
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """
+    Безопасный перехватчик HTTP-редиректов (301, 302, 303, 307, 308).
+    Предотвращает SSRF-атаки через редирект внешнего сайта на приватные/локальные адреса.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        is_safe, err = validate_url_ssrf(newurl)
+        if not is_safe:
+            logger.warning(f"[SSRF Guard] Блокировка попытки обхода через HTTP {code} редирект: {newurl} ({err})")
+            raise urllib.error.HTTPError(
+                newurl,
+                code,
+                f"SSRF Redirect Blocked: {err}",
+                headers,
+                fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 # ==============================================================================

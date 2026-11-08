@@ -38,6 +38,7 @@ class TestServerApi(unittest.TestCase):
         # Запуск сервера на свободном порту 8899
         config.SERVER_HOST = "127.0.0.1"
         config.SERVER_PORT = 8899
+        config.DEBUG = True
         cls.base_url = f"http://127.0.0.1:{config.SERVER_PORT}"
 
         cls.server = UptimeServer(cls.storage, cls.monitor, cls.loop)
@@ -48,6 +49,8 @@ class TestServerApi(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.stop()
+        cls.loop.close()
+        config.DEBUG = False
         os.close(cls.tmp_fd)
         if os.path.exists(cls.tmp_path):
             os.remove(cls.tmp_path)

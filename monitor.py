@@ -19,7 +19,7 @@ import urllib.request
 from typing import Any, Callable, Coroutine, Dict, Optional, Tuple
 
 import config
-from security import validate_url_ssrf
+from security import SafeRedirectHandler, validate_url_ssrf
 from storage import Storage
 
 logger = config.logger
@@ -42,12 +42,12 @@ class UptimeMonitor:
         Единичная проверка URL с замером времени ответа и предварительной защитой от SSRF:
         Возвращает: (is_success, status_code, response_time_ms, error_message).
         """
-        # 1. Защита от SSRF
+        # 1. Защита от SSRF (проверка начального URL)
         is_safe, ssrf_err = validate_url_ssrf(url)
         if not is_safe:
             return False, None, 0.0, f"SSRF Блокировка: {ssrf_err}"
 
-        # 2. Выполнение HTTP/HTTPS запроса с замером времени
+        # 2. Выполнение HTTP/HTTPS запроса с замером времени и валидацией редиректов
         req = urllib.request.Request(
             url,
             headers={
@@ -57,7 +57,6 @@ class UptimeMonitor:
         )
 
         ctx = ssl.create_default_context()
-        # В тестах допускаются сертификаты системы
         ctx.check_hostname = True
         ctx.verify_mode = ssl.CERT_REQUIRED
 
@@ -65,12 +64,20 @@ class UptimeMonitor:
 
         def _do_request():
             try:
-                with urllib.request.urlopen(req, timeout=config.HTTP_CHECK_TIMEOUT, context=ctx) as resp:
+                # Кастомный opener с защитой от SSRF на каждом редиректе (301/302)
+                opener = urllib.request.build_opener(
+                    SafeRedirectHandler(),
+                    urllib.request.HTTPSHandler(context=ctx),
+                )
+                with opener.open(req, timeout=config.HTTP_CHECK_TIMEOUT) as resp:
                     code = resp.getcode()
                     # 2xx и 3xx считаются успешной доступностью
                     success = 200 <= code < 400
                     return success, code, None
             except urllib.error.HTTPError as e:
+                # Если редирект был заблокирован из-за SSRF
+                if "SSRF Redirect Blocked" in str(e.reason):
+                    return False, e.code, f"SSRF Редирект заблокирован: {e.reason}"
                 # Сервер ответил ошибкой 4xx или 5xx
                 return False, e.code, f"HTTP {e.code}: {e.reason}"
             except urllib.error.URLError as e:
@@ -82,16 +89,25 @@ class UptimeMonitor:
             except Exception as e:
                 return False, None, f"Исключение при запросе: {type(e).__name__} ({e})"
 
-        is_success, status_code, err_msg = await asyncio.to_thread(_do_request)
-        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        try:
+            # Защита пула потоков от зависаний (Slowloris / Tarpit)
+            is_success, status_code, err_msg = await asyncio.wait_for(
+                asyncio.to_thread(_do_request),
+                timeout=config.HTTP_CHECK_TIMEOUT + 4.0,
+            )
+        except asyncio.TimeoutError:
+            is_success = False
+            status_code = None
+            err_msg = f"Глобальный таймаут запроса (> {config.HTTP_CHECK_TIMEOUT + 4}с)"
 
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
         return is_success, status_code, elapsed_ms, err_msg
 
     async def process_site_check(self, site: Dict[str, Any]) -> None:
         """
         Полная обработка одной проверки сайта со стейт-машиной алертов:
         - 2 сбоя подряд -> алерт пользователю;
-        - повторные сбои (3, 4...) -> без спама;
+        - повторные сбои (3, 4...) -> без спама (если алерт уже доставлен);
         - следующий успех -> алерт о восстановлении работы.
         """
         site_id = site["id"]
@@ -128,20 +144,22 @@ class UptimeMonitor:
                 f"(Сбоев подряд: {new_consecutive_fails})"
             )
 
-            # Триггер алерта строго после CONSECUTIVE_FAILS_THRESHOLD (по ТЗ: 2 подряд сбоя)
-            if new_consecutive_fails == config.CONSECUTIVE_FAILS_THRESHOLD and not prev_alert_sent:
-                logger.info(f"[Monitor] 2 подряд сбоя для {url}. Отправка алерта пользователю {user_id}!")
-                new_alert_sent = True
+            # Триггер алерта при достижении порога сбоев и отсутствии подтверждённой доставки
+            if new_consecutive_fails >= config.CONSECUTIVE_FAILS_THRESHOLD and not prev_alert_sent:
+                logger.info(f"[Monitor] {new_consecutive_fails} подряд сбоя для {url}. Отправка алерта пользователю {user_id}!")
+                sent_ok = False
                 if self.notify_callback:
                     code_str = f"HTTP {status_code}" if status_code else "Сетевой сбой"
                     msg = (
                         f"🔴 <b>Внимание: сайт недоступен!</b>\n\n"
                         f"🔗 <code>{url}</code>\n"
                         f"⚠️ Причина: <b>{err_msg or code_str}</b>\n"
-                        f"❌ Зафиксировано 2 сбоя подряд с интервалом 5 мин.\n\n"
+                        f"❌ Зафиксировано {new_consecutive_fails} сбоев подряд с интервалом 5 мин.\n\n"
                         f"<i>Следующее уведомление придёт, когда сайт восстановит работу.</i>"
                     )
-                    await self.notify_callback(user_id, msg)
+                    sent_ok = await self.notify_callback(user_id, msg)
+                # Фиксируем alert_sent только если сообщение реально доставлено в Telegram
+                new_alert_sent = bool(sent_ok)
 
         # Сохранение результатов в БД и ротация истории
         self.storage.record_check_result(

@@ -89,11 +89,19 @@ class UptimeApiHandler(BaseHTTPRequestHandler):
         if not init_data and "initData" in qs:
             init_data = qs["initData"][0]
 
-        # Поддержка локального теста без Telegram (для удобства автономного тестирования)
+        # Поддержка локального теста без Telegram (строго в режиме DEBUG и с localhost)
         if "test_user_id" in qs:
-            test_id = int(qs["test_user_id"][0])
-            self.storage.upsert_user(test_id, "test_dev", "Developer Test")
-            return True, test_id, None
+            client_ip = self.client_address[0] if self.client_address else ""
+            if config.DEBUG and client_ip in ("127.0.0.1", "::1", "localhost"):
+                try:
+                    test_id = int(qs["test_user_id"][0])
+                    self.storage.upsert_user(test_id, "test_dev", "Developer Test")
+                    return True, test_id, None
+                except (ValueError, IndexError):
+                    return False, None, "Некорректный test_user_id"
+            else:
+                logger.warning(f"[Auth Guard] Заблокирована попытка неавторизованного входа через test_user_id (DEBUG={config.DEBUG}, IP={client_ip})")
+                return False, None, "Параметр test_user_id запрещён в боевом режиме."
 
         if not init_data:
             return False, None, "Отсутствуют данные авторизации Telegram (initData)"
@@ -158,8 +166,8 @@ class UptimeApiHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {"ok": True, "sites": sites})
             return
 
-        # 4. REST API: /api/sites/{id}/history
-        history_match = re.match(r"^/api/sites/(\d+)/history$", path)
+        # 4. REST API: /api/sites/{id}/history (числовой ID до 18 знаков во избежание Integer Overflow)
+        history_match = re.match(r"^/api/sites/(\d{1,18})/history$", path)
         if history_match:
             site_id = int(history_match.group(1))
             ok, user_id, err = self._authenticate_request()
@@ -182,10 +190,18 @@ class UptimeApiHandler(BaseHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         path = parsed_url.path
 
-        # Чтение тела запроса
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
+        # Безопасное чтение Content-Length (максимум 64 КБ для защиты от DoS)
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "Некорректный заголовок Content-Length.")
+            return
 
+        if content_length > 65536:
+            self._send_error_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Превышен максимальный размер тела запроса (64 КБ).")
+            return
+
+        body_bytes = self.rfile.read(content_length) if content_length > 0 else b""
         payload = {}
         if body_bytes:
             try:
@@ -201,9 +217,18 @@ class UptimeApiHandler(BaseHTTPRequestHandler):
                 self._send_error_json(HTTPStatus.UNAUTHORIZED, err or "Не авторизован")
                 return
 
-            raw_url = payload.get("url", "").strip()
-            if not raw_url:
-                self._send_error_json(HTTPStatus.BAD_REQUEST, "Поле 'url' обязательно для заполнения.")
+            if not isinstance(payload, dict):
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "Тело запроса должно быть JSON-объектом.")
+                return
+
+            raw_url = payload.get("url")
+            if not isinstance(raw_url, str) or not raw_url.strip():
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "Поле 'url' обязательно и должно быть строкой.")
+                return
+
+            raw_url = raw_url.strip()
+            if len(raw_url) > 2048:
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "Превышена максимальная длина URL (2048 символов).")
                 return
 
             # Проверка безопасности: SSRF Guard
@@ -229,7 +254,7 @@ class UptimeApiHandler(BaseHTTPRequestHandler):
             return
 
         # 2. REST API: Ручная мгновенная проверка (POST /api/sites/{id}/check)
-        check_match = re.match(r"^/api/sites/(\d+)/check$", path)
+        check_match = re.match(r"^/api/sites/(\d{1,18})/check$", path)
         if check_match:
             site_id = int(check_match.group(1))
             ok, user_id, err = self._authenticate_request()
@@ -267,7 +292,7 @@ class UptimeApiHandler(BaseHTTPRequestHandler):
         path = parsed_url.path
 
         # REST API: Удаление сайта (DELETE /api/sites/{id})
-        delete_match = re.match(r"^/api/sites/(\d+)$", path)
+        delete_match = re.match(r"^/api/sites/(\d{1,18})$", path)
         if delete_match:
             site_id = int(delete_match.group(1))
             ok, user_id, err = self._authenticate_request()
@@ -296,10 +321,15 @@ class UptimeApiHandler(BaseHTTPRequestHandler):
 
         file_path = (WEB_DIR / clean_path).resolve()
 
-        # Защита от Directory Traversal
-        if not str(file_path).startswith(str(WEB_DIR)):
-            self._send_error_json(HTTPStatus.FORBIDDEN, "Доступ запрещён.")
-            return
+        # Строгая защита от Directory Traversal
+        try:
+            if not file_path.is_relative_to(WEB_DIR):
+                self._send_error_json(HTTPStatus.FORBIDDEN, "Доступ запрещён.")
+                return
+        except AttributeError:
+            if not str(file_path).startswith(str(WEB_DIR) + os.sep) and file_path != WEB_DIR:
+                self._send_error_json(HTTPStatus.FORBIDDEN, "Доступ запрещён.")
+                return
 
         if not file_path.is_file():
             self._send_error_json(HTTPStatus.NOT_FOUND, f"Файл {clean_path} не найден.")

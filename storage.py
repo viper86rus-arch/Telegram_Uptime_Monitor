@@ -13,6 +13,7 @@ GitHub: https://github.com/viper86rus-arch/Telegram_Uptime_Monitor
 
 import contextlib
 import sqlite3
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,6 +27,7 @@ class Storage:
 
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = str(db_path or config.DB_PATH)
+        self._write_lock = threading.Lock()
         self._init_db()
 
     @contextlib.contextmanager
@@ -33,6 +35,7 @@ class Storage:
         conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA busy_timeout = 5000;")
         try:
             with conn:
                 yield conn
@@ -40,9 +43,11 @@ class Storage:
             conn.close()
 
     def _init_db(self) -> None:
-        """Инициализация схемы таблиц с индексами."""
+        """Инициализация схемы таблиц с индексами и триггерами защиты."""
         with self._get_connection() as conn:
-            conn.executescript("""
+            conn.execute("PRAGMA journal_mode = WAL;")
+            conn.execute("PRAGMA synchronous = NORMAL;")
+            conn.executescript(f"""
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY,
                     username TEXT,
@@ -78,8 +83,17 @@ class Storage:
 
                 CREATE INDEX IF NOT EXISTS idx_sites_user ON sites(user_id);
                 CREATE INDEX IF NOT EXISTS idx_history_site ON check_history(site_id, checked_at DESC);
+
+                -- Триггер защиты от Race Condition: запрет добавления > MAX_URLS_PER_USER на уровне движка БД
+                CREATE TRIGGER IF NOT EXISTS trg_enforce_max_sites
+                BEFORE INSERT ON sites
+                FOR EACH ROW
+                WHEN (SELECT COUNT(*) FROM sites WHERE user_id = NEW.user_id) >= {config.MAX_URLS_PER_USER}
+                BEGIN
+                    SELECT RAISE(ABORT, 'Лимит сайтов исчерпан: максимум {config.MAX_URLS_PER_USER} по ТЗ');
+                END;
             """)
-        logger.info(f"[Storage] База данных SQLite успешно инициализирована: {self.db_path}")
+        logger.info(f"[Storage] База данных SQLite успешно инициализирована (WAL Mode): {self.db_path}")
 
     # ==========================================================================
     # 1. ПОЛЬЗОВАТЕЛИ
@@ -125,37 +139,42 @@ class Storage:
 
     def add_site(self, user_id: int, url: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
         """
-        Добавление нового сайта с контролем лимита 5 URL:
+        Добавление нового сайта с контролем лимита 5 URL и защитой от Race Condition:
         Возвращает (success, site_dict, error_message).
         """
         norm_url = url.strip()
         now = int(time.time())
 
-        with self._get_connection() as conn:
-            # 1. Проверка текущего количества сайтов пользователя
-            count_row = conn.execute("SELECT COUNT(*) as cnt FROM sites WHERE user_id = ?", (user_id,)).fetchone()
-            current_count = count_row["cnt"] if count_row else 0
+        with self._write_lock:
+            with self._get_connection() as conn:
+                # 1. Проверка текущего количества сайтов пользователя
+                count_row = conn.execute("SELECT COUNT(*) as cnt FROM sites WHERE user_id = ?", (user_id,)).fetchone()
+                current_count = count_row["cnt"] if count_row else 0
 
-            if current_count >= config.MAX_URLS_PER_USER:
-                return False, None, f"Достигнут лимит: максимум {config.MAX_URLS_PER_USER} сайтов на одного пользователя."
+                if current_count >= config.MAX_URLS_PER_USER:
+                    return False, None, f"Достигнут лимит: максимум {config.MAX_URLS_PER_USER} сайтов на одного пользователя."
 
-            # 2. Проверка дубликата
-            existing = conn.execute("SELECT id FROM sites WHERE user_id = ? AND url = ?", (user_id, norm_url)).fetchone()
-            if existing:
-                return False, None, "Этот сайт уже добавлен в ваш список мониторинга."
+                # 2. Проверка дубликата
+                existing = conn.execute("SELECT id FROM sites WHERE user_id = ? AND url = ?", (user_id, norm_url)).fetchone()
+                if existing:
+                    return False, None, "Этот сайт уже добавлен в ваш список мониторинга."
 
-            # 3. Вставка
-            try:
-                cur = conn.execute("""
-                    INSERT INTO sites (user_id, url, status, created_at)
-                    VALUES (?, ?, 'PENDING', ?)
-                """, (user_id, norm_url, now))
-                new_id = cur.lastrowid
-            except Exception as e:
-                return False, None, f"Ошибка сохранения сайта: {e}"
+                # 3. Вставка с проверкой триггера БД
+                try:
+                    cur = conn.execute("""
+                        INSERT INTO sites (user_id, url, status, created_at)
+                        VALUES (?, ?, 'PENDING', ?)
+                    """, (user_id, norm_url, now))
+                    new_id = cur.lastrowid
+                except sqlite3.OperationalError as e:
+                    if "Лимит сайтов исчерпан" in str(e):
+                        return False, None, f"Достигнут лимит: максимум {config.MAX_URLS_PER_USER} сайтов на одного пользователя."
+                    return False, None, f"Ошибка сохранения сайта: {e}"
+                except Exception as e:
+                    return False, None, f"Ошибка сохранения сайта: {e}"
 
-            site_row = conn.execute("SELECT * FROM sites WHERE id = ?", (new_id,)).fetchone()
-            return True, dict(site_row), None
+                site_row = conn.execute("SELECT * FROM sites WHERE id = ?", (new_id,)).fetchone()
+                return True, dict(site_row), None
 
     def delete_site(self, site_id: int, user_id: int) -> bool:
         """Удаление сайта с гарантией проверки прав доступа."""

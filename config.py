@@ -49,6 +49,7 @@ load_env(ENV_PATH)
 
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
+DEBUG: bool = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
 WEBAPP_URL: str = os.getenv("WEBAPP_URL", f"http://{SERVER_HOST}:{SERVER_PORT}").rstrip("/")
