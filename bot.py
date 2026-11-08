@@ -33,7 +33,7 @@ class TelegramBot:
         self._running = False
         self._last_update_id = 0
 
-    async def _api_call(self, method: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _api_call(self, method: str, payload: Dict[str, Any], timeout: int = 15) -> Dict[str, Any]:
         """Отправка асинхронного POST-запроса к Telegram Bot API."""
         url = f"{self.api_url}/{method}"
         data = json.dumps(payload).encode("utf-8")
@@ -44,7 +44,7 @@ class TelegramBot:
         )
 
         def _do_call():
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
 
         return await asyncio.to_thread(_do_call)
@@ -116,14 +116,17 @@ class TelegramBot:
         self._running = True
         logger.info("[Bot] Запуск Telegram Long-Polling...")
 
+        poll_timeout = 20
+        client_timeout = poll_timeout + 10
+
         while self._running:
             try:
                 payload = {
                     "offset": self._last_update_id + 1,
-                    "timeout": 20,
+                    "timeout": poll_timeout,
                     "allowed_updates": ["message"],
                 }
-                res = await self._api_call("getUpdates", payload)
+                res = await self._api_call("getUpdates", payload, timeout=client_timeout)
                 if res.get("ok"):
                     for update in res.get("result", []):
                         self._last_update_id = update["update_id"]
@@ -141,8 +144,15 @@ class TelegramBot:
                             await self.handle_start(user_id, username, first_name)
             except asyncio.CancelledError:
                 break
+            except TimeoutError:
+                # Нормальное поведение long-polling при отсутствии новых сообщений
+                continue
             except Exception as e:
-                logger.error(f"[Bot] Ошибка в long-polling цикле: {e}")
+                # В случае сетевых перебоев или таймаутов urllib
+                err_str = str(e)
+                if "timed out" in err_str.lower():
+                    continue
+                logger.warning(f"[Bot] Временная заминка в long-polling цикле: {e}")
                 await asyncio.sleep(2)
 
     def stop(self) -> None:
