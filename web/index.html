@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Uptime Monitor | Telegram Mini App</title>
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Шапка приложения -->
+    <header class="app-header">
+      <div class="header-content">
+        <div class="logo-zone">
+          <div class="radar-pulse"></div>
+          <h1>Uptime Monitor</h1>
+        </div>
+        <div class="limit-badge" id="limitBadge">0 / 5 URL</div>
+      </div>
+      <p class="header-subtitle">Автономный контроль доступности ваших сайтов 24/7</p>
+    </header>
+
+    <!-- Сводка и статус системы -->
+    <section class="summary-cards">
+      <div class="card stat-card">
+        <span class="stat-num text-success" id="statUpCount">0</span>
+        <span class="stat-label">Доступны</span>
+      </div>
+      <div class="card stat-card">
+        <span class="stat-num text-danger" id="statDownCount">0</span>
+        <span class="stat-label">Сбои</span>
+      </div>
+      <div class="card stat-card">
+        <span class="stat-num text-accent" id="statInterval">5м</span>
+        <span class="stat-label">Интервал</span>
+      </div>
+    </section>
+
+    <!-- Кнопка вызова модалки добавления -->
+    <div class="action-bar">
+      <button class="btn btn-primary" id="btnOpenAddModal">
+        <span class="btn-icon">➕</span> Добавить сайт в мониторинг
+      </button>
+    </div>
+
+    <!-- Список отслеживаемых сайтов -->
+    <section class="sites-section">
+      <div class="section-title">
+        <h2>Отслеживаемые ресурсы</h2>
+        <button class="btn-refresh" id="btnRefresh" title="Обновить список">🔄</button>
+      </div>
+
+      <div class="sites-list" id="sitesList">
+        <!-- Скелетон загрузки -->
+        <div class="empty-state" id="loadingState">
+          <div class="spinner"></div>
+          <p>Загрузка данных мониторинга...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Футер -->
+    <footer class="app-footer">
+      <span>V1PER IT Solutions • 2026</span>
+    </footer>
+  </div>
+
+  <!-- МОДАЛКА: Добавление нового URL -->
+  <div class="modal-overlay" id="addModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Добавление сайта</h3>
+        <button class="modal-close" id="btnCloseAddModal">✕</button>
+      </div>
+      <form id="addSiteForm">
+        <p class="modal-desc">
+          Укажите полный веб-адрес с протоколом <b>http://</b> или <b>https://</b>.
+          Лимит: до 5 URL на аккаунт.
+        </p>
+
+        <div class="form-group">
+          <label for="urlInput">URL адрес сайта:</label>
+          <input
+            type="url"
+            id="urlInput"
+            name="url"
+            class="input-field"
+            placeholder="https://example.com"
+            required
+            autocomplete="off"
+          />
+        </div>
+
+        <div class="alert alert-error" id="addErrorBox" style="display: none;"></div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" id="btnCancelAdd">Отмена</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitAdd">
+            <span class="btn-spinner" id="addSpinner" style="display: none;"></span>
+            Подтвердить
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- МОДАЛКА: Детали сайта и история последних 20 проверок -->
+  <div class="modal-overlay" id="historyModal">
+    <div class="modal-card modal-large">
+      <div class="modal-header">
+        <div class="site-header-info">
+          <h3 id="historySiteUrl">https://example.com</h3>
+          <span class="status-badge" id="historyStatusBadge">UP</span>
+        </div>
+        <button class="modal-close" id="btnCloseHistoryModal">✕</button>
+      </div>
+
+      <div class="history-metrics">
+        <div class="metric-item">
+          <span class="metric-label">Время ответа:</span>
+          <span class="metric-val" id="historyLatency">-- мс</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-label">Код ответа:</span>
+          <span class="metric-val" id="historyStatusCode">--</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-label">Сбоев подряд:</span>
+          <span class="metric-val" id="historyFails">0 / 2</span>
+        </div>
+      </div>
+
+      <div class="history-controls">
+        <button class="btn btn-sm btn-outline" id="btnCheckNow">⚡ Проверить сейчас</button>
+        <button class="btn btn-sm btn-danger" id="btnDeleteSite">🗑️ Удалить сайт</button>
+      </div>
+
+      <div class="history-section">
+        <h4>История последних 20 проверок (ТЗ):</h4>
+        <div class="history-list" id="historyList">
+          <div class="empty-text">История ещё формируется...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
