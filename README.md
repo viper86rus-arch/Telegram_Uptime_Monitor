@@ -1,12 +1,12 @@
 # 🛡️ V1PER IT Solutions | Telegram Uptime Monitor & Mini App Platform
 
-[![Tests](https://img.shields.io/badge/Tests-9%2F9%20Passed%20(100%25)-brightgreen.svg)](tests/)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Studio](https://img.shields.io/badge/Studio-V1PER_IT_Solutions-emerald.svg)](https://github.com/viper86rus-arch)
-[![Architecture: Clean Zero--Pip](https://img.shields.io/badge/Architecture-Clean%20Zero--Pip-blueviolet.svg)]()
-[![Platform: Telegram TMA 2026](https://img.shields.io/badge/Telegram-Mini_Apps_v7-229ED9.svg)](https://core.telegram.org/bots/webapps)
-[![Security: SSRF Protected](https://img.shields.io/badge/Security-SSRF%20Guard%20RFC1918-red.svg)](security.py)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://badgen.net/badge/Tests/9%2F9%20Passed/green)](tests/)
+[![Python: 3.10+](https://badgen.net/badge/Python/3.10+/blue?icon=python)](https://www.python.org/)
+[![Studio](https://badgen.net/badge/Studio/V1PER%20IT%20Solutions/cyan)](https://github.com/viper86rus-arch)
+[![Architecture: Clean Zero--Pip](https://badgen.net/badge/Architecture/Clean%20Zero-Pip/purple)](https://github.com/viper86rus-arch/Telegram_Uptime_Monitor)
+[![Platform: Telegram TMA 2026](https://badgen.net/badge/Telegram/Mini%20Apps%20v7/blue?icon=telegram)](https://core.telegram.org/bots/webapps)
+[![Security: SSRF Protected](https://badgen.net/badge/Security/SSRF%20Guard%20RFC1918/red)](security.py)
+[![License: MIT](https://badgen.net/badge/license/MIT/yellow)](LICENSE)
 
 > **Автономный промышленный сервис мониторинга доступности веб-ресурсов студии V1PER IT Solutions с нативным интерфейсом Telegram Mini App (TMA).**  
 > Круглосуточный фоновый контроль сайтов каждые 5 минут, замер времени отклика (latency), строгая защита от SSRF (отсечение локальных и приватных сетей), серверная аутентификация по HMAC-SHA256, хранение последних 20 проверок и умная стейт-машина алертов (уведомление строго после 2 сбоев подряд и при восстановлении).
