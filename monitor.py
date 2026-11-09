@@ -19,7 +19,12 @@ import urllib.request
 from typing import Any, Callable, Coroutine, Dict, Optional, Tuple
 
 import config
-from security import SafeRedirectHandler, validate_url_ssrf
+from security import (
+    PinnedDNSHTTPHandler,
+    PinnedDNSHTTPSHandler,
+    SafeRedirectHandler,
+    validate_url_ssrf,
+)
 from storage import Storage
 
 logger = config.logger
@@ -64,10 +69,11 @@ class UptimeMonitor:
 
         def _do_request():
             try:
-                # Кастомный opener с защитой от SSRF на каждом редиректе (301/302)
+                # Кастомный opener с защитой от SSRF на редиректах и DNS Rebinding (TOCTOU)
                 opener = urllib.request.build_opener(
                     SafeRedirectHandler(),
-                    urllib.request.HTTPSHandler(context=ctx),
+                    PinnedDNSHTTPHandler(),
+                    PinnedDNSHTTPSHandler(context=ctx),
                 )
                 with opener.open(req, timeout=config.HTTP_CHECK_TIMEOUT) as resp:
                     code = resp.getcode()

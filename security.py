@@ -13,11 +13,14 @@ GitHub: https://github.com/viper86rus-arch/Telegram_Uptime_Monitor
 
 import hashlib
 import hmac
+import http.client
 import ipaddress
 import json
 import socket
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from typing import Any, Dict, Optional, Tuple
 
 import config
@@ -114,7 +117,29 @@ def validate_url_ssrf(url: str) -> Tuple[bool, Optional[str]]:
             logger.warning(f"[SSRF Guard] Блокировка попытки добавления приватного адреса: {url} -> {ip_str}")
             return False, f"Добавление локальных и служебных адресов ({ip_str}) строго запрещено политикой безопасности."
 
+    # Фиксация проверенного IP-адреса для предотвращения атак DNS Rebinding (TOCTOU)
+    first_verified_ip = addr_info[0][4][0]
+    pin_dns_record(hostname, first_verified_ip)
+
     return True, None
+
+
+_PINNED_DNS_REGISTRY: Dict[str, Tuple[str, float]] = {}
+
+
+def pin_dns_record(hostname: str, ip: str, ttl: float = 60.0) -> None:
+    """Фиксирует проверенный IP-адрес для предотвращения атак DNS Rebinding (TOCTOU)."""
+    _PINNED_DNS_REGISTRY[hostname.lower()] = (ip, time.time() + ttl)
+
+
+def get_pinned_ip(hostname: str) -> Optional[str]:
+    """Возвращает проверенный IP-адрес, если срок валидации не истек."""
+    entry = _PINNED_DNS_REGISTRY.get(hostname.lower())
+    if entry:
+        ip, expires_at = entry
+        if time.time() <= expires_at:
+            return ip
+    return None
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -135,6 +160,47 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
                 fp,
             )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTP-соединение, привязанное к предварительно валидированному IP (Anti-DNS-Rebinding)."""
+
+    def connect(self):
+        target_ip = get_pinned_ip(self.host) or self.host
+        self.sock = self._create_connection(
+            (target_ip, self.port), self.timeout, self.source_address
+        )
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS-соединение с привязкой к проверенному IP и сохранением SNI-домена для TLS."""
+
+    def connect(self):
+        target_ip = get_pinned_ip(self.host) or self.host
+        self.sock = self._create_connection(
+            (target_ip, self.port), self.timeout, self.source_address
+        )
+        server_hostname = self._tunnel_host if self._tunnel_host else self.host
+        self.sock = self.context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+class PinnedDNSHTTPHandler(urllib.request.HTTPHandler):
+    """Обработчик HTTP с защитой от изменения DNS между проверкой и запросом (TOCTOU Shield)."""
+
+    def http_open(self, req):
+        return self.do_open(PinnedHTTPConnection, req)
+
+
+class PinnedDNSHTTPSHandler(urllib.request.HTTPSHandler):
+    """Обработчик HTTPS с защитой от изменения DNS между проверкой и запросом (TOCTOU Shield)."""
+
+    def https_open(self, req):
+        return self.do_open(
+            PinnedHTTPSConnection,
+            req,
+            context=self._context,
+            check_hostname=self._check_hostname,
+        )
 
 
 # ==============================================================================
